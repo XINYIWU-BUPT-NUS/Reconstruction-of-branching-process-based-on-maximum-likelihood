@@ -1,0 +1,275 @@
+# Initial settings
+na <- 30 # the number of Annealing iteration
+Parameter <- c(,...,) # feasible parameters vector, e.g., c(2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3), also take Poisson distribution for example
+np <- length(Parameter)
+Depth <- c(,...,) # feasible depth vector, e.g., c(2, 3, 4, 5, 6, 7, 8, 9)
+nd <- length(Depth)
+Lambda <- c(,...,) # feasible missing proportion vector, e.g., c(0.10, 0.15, 0.20, 0.25, 0.30)
+nl <- length(Lambda)
+A <- data.frame(matrix(nrow = na*np*nd*nl*3, ncol = 5)) # reconstruction performance data
+colnames(A) = c("parameter",
+                "depth", 
+                "lambda", 
+                "type", # reconstruction algorithm type
+                "normdistance") # error distance for accuracy
+# reset time: 1 for algorithm MD; 2 for S; 3 for R
+Time1 <- 0 
+Time2 <- 0
+Time3 <- 0
+
+#tidy function, serving for truncation with acceptable range
+tidy <- function(off_r,accept_range) {
+  off_r_v <- c(rep(0, (accept_range+2)))
+  for (i in 1:(accept_range+1)) {
+    off_r_v[i] <- off_r[i]
+  }
+  for (j in (accept_range+2): length(off_r)) {
+    off_r_v[accept_range+2] <- off_r_v[accept_range+2] + off_r[j]
+  }
+  
+  off_r_v[is.na(off_r_v)] <- 0
+  
+  return(off_r_v)
+}
+
+# random allocate function
+random.allocate <- function(M, N) {
+  r <- rep(0, N)
+  for (i in 1:M) {
+    k <- round(runif(1, 1, N), 0)
+    r[k] <- 1
+  }
+  return(r)
+}
+
+# calculation function of weighted distance
+weighted.dis <- function(result, dp) {
+  dis <- 0
+  for (k in 1:length(result)) {
+    dis <- dis + result[k]^2 * dp[k]
+  }
+  dis <- sqrt(dis)
+  return(dis)
+}
+
+# entire forward branching and reconstructing procedure, over the annealing randomness
+
+for (p in 1:np) {
+  parameter <- Parameter[p]
+  for (d in 1:nd) {
+    depth <- Depth[d] - 1
+    for (l in 1:nl) {
+      lambda <- Lambda[l]
+      TreeData <- Create
+      for (a in 1:na) {
+          depth <- Depth[d]
+          x <- c()
+          L <- c()
+          tail <- tail(TreeData, Z_k)
+          head <- head(TreeData, nrow(TreeData)-Z_k)
+          
+          for(i in 1:Z_k){
+            chnum <- rpois(1,parameter)
+            x <- c(x, chnum)
+            tail$child_num[i] <- chnum
+          }
+          
+          fullTreeData <- rbind(head, tail)
+          
+          Z <- sum(x)
+          for (i in 1:Z_k) {
+            if(x[i] != 0){
+              name <- L_k[i]
+              for (j in 1:x[i]){
+                newname <- paste(name,".", j, sep = "")
+                L <- c(L, newname)
+              }
+            }
+          }
+          for (k in 1:length(L)){
+            fullTreeData[nrow(fullTreeData) + 1, ] = c(L[k], depth, NA)
+          }
+          
+          colnames(fullTreeData) = c("levelName", "generation_num", "child_num")
+          fullTreeData <- fullTreeData %>%
+            mutate( generation_num = as.integer(generation_num))
+          fullTreeData <- fullTreeData %>%
+            mutate( child_num = as.integer(child_num))
+          sapply(fullTreeData, class)
+          
+          exampleTree <- fullTreeData
+          pZone <- subset(exampleTree,exampleTree$generation_num == (depth-1))
+          cZone <- subset(exampleTree,exampleTree$generation_num == depth)
+          g <- data.frame(table(exampleTree$generation_num))[1:(depth+1),2]#group size for each generation
+          M <- round(lambda*g[depth+1])
+          dp <- c()
+          accept_range <- qpois(0.95,parameter,
+                                lower.tail = TRUE, # If TRUE, probabilities are P(X <= x), or P(X > x) otherwise
+                                log.p = FALSE)     # If TRUE, probabilities are given as log
+          
+          for (i in 0:accept_range) {
+            dp[i+1] <- dpois(i,parameter)
+          } 
+          dp[accept_range+2] <- 1 - sum(dp)
+          sum(dp)
+          
+          sample <- sample(1:g[depth+1], round(lambda*g[depth+1]), replace=FALSE)
+          ii <- order(sample)
+          sample <- as.numeric(sample[ii])
+          sample #randomly pick
+          pZone_1 <- mutate(pZone, cumsum = cumsum(pZone$child_num))
+          i<- 1
+          j <- 1
+          
+          while (i < (length(sample) + 1)) {
+            if (j == 1) {
+              j_left <- 0
+            }
+            else {
+              j_left <- pZone_1$cumsum[j - 1]
+            }
+            j_right <- pZone_1$cumsum[j]
+            
+            if (sample[i] > j_left) {
+              if (sample[i] < j_right || sample[i] == j_right) {
+                flag <- TRUE
+                pZone_1$child_num[j] <- pZone_1$child_num[j] - 1
+                i <- i + 1
+              }
+              else {
+                flag <- FALSE
+              }
+            }
+            
+            else {
+              flag <- FALSE
+            }
+            print(i)
+            if (!flag) {
+              j <- j + 1
+            }
+          }
+          
+          pZone_1$cumsum <- cumsum(pZone_1$child_num)
+          sum(pZone$child_num)-sum(pZone_1$child_num)
+          dt_Pruned <- pZone_1$child_num
+          
+          
+          M <- round(lambda*g[depth+1])
+          
+          columns= c("offspring","likelihood","norm")
+          re = data.frame(matrix(nrow = 2, ncol = length(columns)))
+          colnames(re) = columns 
+          re$likelihood[1] <- -10000
+          
+          Base <- data.frame(table(pZone_1$child_num))
+          Base <- tidy(Base$Freq,accept_range)
+          Base
+          
+          Accurate <- data.frame(table(pZone$child_num))
+          Accu <- tidy(Accurate$Freq,accept_range)
+          Accu
+          sum(Accu)-sum(Base)
+          start_time1 <- Sys.time()
+          ##allocate one by one
+          for (j in 1:M) {
+            for (i in 1:(accept_range+1)) {
+              allo <- vector("integer", accept_range+2)
+              allo[i] <- -1
+              allo[i+1] <- 1
+              x <- Base + allo
+              if (length(which(x<0)) == 0) {
+                likelihood <- dmultinom(x = x,prob = dp)
+                if (likelihood > re$likelihood[1]) {
+                  re$offspring[1] <- paste(x,collapse=" ")
+                  re$likelihood[1] <- likelihood
+                  max <- allo
+                }
+              }
+            }
+            Base <- Base + max
+            print(max)
+          }
+          
+          end_time1 <- Sys.time()
+          time_elapsed1 <- end_time1 - start_time1
+          Time1 <- Time1 + as.numeric(time_elapsed1)
+          
+          start_time2 <- Sys.time()
+          N <- length(pZone_1$child_num)
+          likeli <- -1000000
+          for (trail in 1:100) {
+            offspring_result <- pZone_1$child_num + random.allocate(M, N)
+            if (length(which(offspring_result < 0)) == 0) {
+              off_r <- data.frame(table(offspring_result))
+              x <- tidy(off_r$Freq,accept_range)
+              if (dmultinom(x = x,prob = dp) > likeli) {
+                xmax <- x
+                likeli <- dmultinom(x = x,prob = dp)
+              }
+            }
+          }
+          
+          end_time2 <- Sys.time()
+          time_elapsed2 <- end_time2 - start_time2
+          Time2 <- Time2 + as.numeric(time_elapsed2)
+          
+          start_time3 <- Sys.time()
+          
+          ffff = 0
+          while (ffff == 0) {
+            
+            totally_random <- pZone_1$child_num + random.allocate(M, N)
+            
+            if (length(which(totally_random < 0)) == 0) {
+              ffff = 1
+            }
+            
+          }
+          
+          totally_random <- data.frame(table(totally_random))
+          totally_random <- tidy(totally_random$Freq,accept_range)
+          
+          end_time3 <- Sys.time()
+          time_elapsed3 <- end_time3 - start_time3
+          Time3 <- Time3 + as.numeric(time_elapsed3)
+          
+          o <- as.integer(unlist(strsplit(re$offspring[1], split = " ")))
+          s <- xmax
+          r <- totally_random
+          
+          result.1 <- Accu - o
+          result.2 <- Accu - s
+          result.3 <- Accu - r
+          
+          
+          A$normdistance2[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 1] <- weighted.dis(result.1, dp)
+          A$normdistance2[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 2] <- weighted.dis(result.2, dp)
+          A$normdistance2[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 3] <- weighted.dis(result.3, dp)
+          
+          A$parameter[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 1] <- parameter
+          A$parameter[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 2] <- parameter
+          A$parameter[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 3] <- parameter
+          
+        A$depth[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 1] <- depth
+        A$depth[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 2] <- depth
+        A$depth[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 3] <- depth
+          
+        A$lambda[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 1] <- lambda
+        A$lambda[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 2] <- lambda
+        A$lambda[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 3] <- lambda
+          
+        A$type[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 1] <- "Multinomial Dist"
+        A$type[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 2] <- "Random Search"
+        A$type[(p-1)*nd*nl*na*3 + (d-1)*nl*na*3 + (l-1)*na*3 + (a-1)*3 + 3] <- "Random Recon"
+      }
+    }
+  }
+}
+
+
+
+
+
+
+
